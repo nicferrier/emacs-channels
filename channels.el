@@ -79,7 +79,7 @@ error."
   "Try to complete the futures attached to PROC.
 
 PROC must be a channel process."
-  (flet ((channel/complete-1 (receiver proc)
+  (noflet ((channel/complete-1 (receiver proc)
            (when receiver
              (let ((to-send
                     (case (kva :satisfy receiver)
