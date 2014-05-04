@@ -80,19 +80,19 @@ error."
 
 PROC must be a channel process."
   (noflet ((channel/complete-1 (receiver proc)
-           (when receiver
-             (let ((to-send
-                    (case (kva :satisfy receiver)
-                      (:line (channel/pop-line proc))
-                      (:char (channel/pop-char proc)))))
-               (if (memq (cdr to-send) '(:no-char :no-line))
-                   (channel/rqpush proc receiver)
-                   ;; Else
-                   (apply (kva :future receiver)
-                          (case (car to-send)
-                            (:error (list nil (cdr to-send)))
-                            (t (list (cdr to-send) nil))))
-                   (channel/complete-1 (channel/rqpop proc) proc))))))
+             (when receiver
+               (let ((to-send
+                      (case (kva :satisfy receiver)
+                        (:line (channel/pop-line proc))
+                        (:char (channel/pop-char proc)))))
+                 (if (memq (cdr to-send) '(:no-char :no-line))
+                     (channel/rqpush proc receiver)
+                     ;; Else
+                     (apply (kva :future receiver)
+                            (case (car to-send)
+                              (:error (list nil (cdr to-send)))
+                              (t (list (cdr to-send) nil))))
+                     (channel/complete-1 (channel/rqpop proc) proc))))))
     (channel/complete-1 (channel/rqpop proc) proc)))
 
 (defun channel/filter (proc data)
