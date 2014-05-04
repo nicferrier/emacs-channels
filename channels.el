@@ -26,29 +26,6 @@
 
 (require 'noflet)
 
-(defvar $/err nil
-  "Global binding of error symbol for $/with-escape.")
-
-(defun $/escape (data)
-  "Escape to the nearest `$/with-escape' handler.")
-
-(defmacro $/with-escape (form on-throw)
-  (declare
-   (debug (form form))
-   (indent 0))
-  (let ((catch-sym (make-symbol "catch-sym"))
-        (escape-sym (make-symbol "escape-sym")))
-    `(let ((form-res
-            (catch (quote ,catch-sym)
-              (noflet (($/escape (data)
-                         (throw (quote ,catch-sym)
-                           (cons (quote ,escape-sym) data))))
-                ,form))))
-       (if (and (consp form-res)
-                (eq (car form-res) (quote ,escape-sym)))
-           (let (($/err (cdr form-res)))
-             (apply ,on-throw (list $/err)))))))
-
 
 (defun channel/add-to-buffer (proc data)
   "Add the DATA to the buffer for PROC."
@@ -67,11 +44,11 @@ throws an error."
       (goto-char (point-min))
       (save-match-data
         (prog1
-         (buffer-substring
-          (point-min)
-          (or (re-search-forward "\n" nil t)
-              ($/escape :no-line)))
-         (delete-region (point-min) (point)))))))
+            (if (re-search-forward "\n" nil t)
+                (prog1
+                    (cons :line (buffer-substring (point-min) (point)))
+                  (delete-region (point-min) (point)))
+                (cons :error :no-line)))))))
 
 (defun channel/pop-char (proc)
   "Remove the top most char from the buffer for PROC.
@@ -82,41 +59,51 @@ error."
     (save-excursion
       (goto-char (point-min))
       (if (> (point-max) (point-min))
-          (buffer-substring
-           (point-min)
-           (+ (point-min) 1))
-          ;; Else throw no-char
-          ($/escape :no-char)))))
+          (prog1
+              (cons :char (buffer-substring (point-min) (+ (point-min) 1)))
+            (delete-char 1))
+          ;; Else return no char
+          (cons :error :no-char)))))
+
+
+(defun channel/rqpop (proc)
+  (let ((rq (process-get proc :channel-queue)))
+    (let ((v (car rq)))
+      (process-put proc :channel-queue (cdr rq))
+      v)))
+
+(defun channel/rqpush (proc r)
+  (process-put proc :channel-queue (cons r (process-get proc :channel-queue))))
+
+(defun channel/complete (proc)
+  "Try to complete the futures attached to PROC.
+
+PROC must be a channel process."
+  (flet ((channel/complete-1 (receiver proc)
+           (when receiver
+             (let ((to-send
+                    (case (kva :satisfy receiver)
+                      (:line (channel/pop-line proc))
+                      (:char (channel/pop-char proc)))))
+               (if (memq (cdr to-send) '(:no-char :no-line))
+                   (channel/rqpush proc receiver)
+                   ;; Else
+                   (apply (kva :future receiver)
+                          (case (car to-send)
+                            (:error (list nil (cdr to-send)))
+                            (t (list (cdr to-send) nil))))
+                   (channel/complete-1 (channel/rqpop proc) proc))))))
+    (channel/complete-1 (channel/rqpop proc) proc)))
 
 (defun channel/filter (proc data)
   "The filter for a channel process."
-  ;;  check the futures waiting on the channel
-  (let ((receiverq (process-get proc :channel-queue)))
-    (channel/add-to-buffer proc data)
-    (when receiverq
-      (let ((receiver (car receiverq)))
-        ($/with-escape
-          (let ((to-send
-                 (case (kva :satisfy receiver)
-                   (:line (channel/pop-line proc))
-                   (:char (channel/pop-char proc)))))
-            ;; Remove the proc from the queue
-            (process-put proc :channel-queue (cdr receiverq))
-            ;; Send result
-            (funcall (kva :future receiver) to-send nil))
-          ;; Escape handle
-          (lambda (err)
-            (cond
-              ((memq err '(:no-char :no-line)) t)
-              (t
-               ;; Remove the proc from the queue
-               (process-put proc :channel-queue (cdr receiverq))
-               ;; Send error
-               (funcall (kva :future receiver) nil err)))))))))
+  (channel/add-to-buffer proc data)
+  (channel/complete proc))
 
 (defun channel/make-receiver (satisfy receiver-proc)
   "Make a receiver expecting SATISFY and wrapping RECEIVER-PROC."
-  (list (cons :satisfy satisfy)
+  (list (cons :id (random))
+        (cons :satisfy satisfy)
         (cons :future receiver-proc)))
 
 (defun channel-readline (channel receiver-proc)
@@ -164,7 +151,8 @@ the channel's buffer."
   ;; channels to be constructed free form around procs (because it
   ;; might encourage the proc to be read in another way)
   (process-put proc :channel-queue nil)
-  (list (cons :process proc)))
-
+  (process-put proc :channel 
+               (list (cons :process proc)))
+  (process-get proc :channel))
 
 ;;; channels.el ends here
